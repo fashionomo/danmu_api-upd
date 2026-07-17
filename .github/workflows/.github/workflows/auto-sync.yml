@@ -1,0 +1,49 @@
+name: Auto Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 添加上游仓库
+          git remote add upstream https://github.com/huangxd-/danmu_api.git || true
+
+          git fetch upstream
+
+          # 保存自己的 GitHub Actions 文件
+          mkdir -p /tmp/workflows_backup
+          cp -r .github/workflows/* /tmp/workflows_backup/ || true
+
+          # 完全同步上游代码
+          git checkout main
+          git reset --hard upstream/main
+
+          # 恢复自己的 Actions
+          mkdir -p .github/workflows
+          cp -r /tmp/workflows_backup/* .github/workflows/ || true
+
+          # 如果 workflow 文件变化，提交回来
+          git add .github/workflows
+
+          git diff --cached --quiet || git commit -m "Keep sync workflow"
+
+          # 推送同步结果
+          git push origin main --force
