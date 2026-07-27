@@ -2,7 +2,7 @@ import BaseSource from './base.js';
 import { log } from "../utils/log-util.js";
 import { buildQueryString, httpGet} from "../utils/http-util.js";
 import { printFirst200Chars, titleMatches, getExplicitSeasonNumber, extractSeasonNumberFromAnimeTitle } from "../utils/common-util.js";
-import { md5, convertToAsciiSum, decodeHtmlEntities, base64ToBytes } from "../utils/codec-util.js";
+import { md5, convertToAsciiSum, decodeHtmlEntities, base64ToBytes, decompressBrotli, utf8BytesToString } from "../utils/codec-util.js";
 import { generateValidStartDate } from "../utils/time-util.js";
 import { addAnime, removeEarliestAnime } from "../utils/cache-util.js";
 import { globals } from '../configs/globals.js';
@@ -74,8 +74,8 @@ export default class IqiyiSource extends BaseSource {
       let data = await doSearch();
       for (let attempt = 0; attempt < MAX_RETRIES && (!data || data.code === "-1"); attempt++) {
         const reason = !data ? "搜索响应为空" : `搜索接口风控 (code=${data.code})`;
-        log("info", `[iQiyi] ${reason}，等待 1.5 秒后重试 (${attempt + 1}/${MAX_RETRIES})`);
-        await new Promise(r => setTimeout(r, 1500));
+        log("info", `[iQiyi] ${reason}，等待 3 秒后重试 (${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise(r => setTimeout(r, 3000));
         data = await doSearch();
       }
 
@@ -196,13 +196,11 @@ export default class IqiyiSource extends BaseSource {
         return null;
       }
 
-      // 提取年份
+      // 提取年份（普通结果卡片在 year 字段，意图聚合卡片 template 112 无 year 字段，年份在 superscript 角标）
       let year = null;
-      if (album.year) {
-        const yearStr = album.year.value || album.year.name;
-        if (yearStr && typeof yearStr === 'string' && yearStr.length === 4 && /^\d{4}$/.test(yearStr)) {
-          year = parseInt(yearStr);
-        }
+      const yearStr = (album.year && (album.year.value || album.year.name)) || album.superscript;
+      if (yearStr && typeof yearStr === 'string' && /^\d{4}$/.test(yearStr)) {
+        year = parseInt(yearStr);
       }
 
       // 清理标题
@@ -234,13 +232,11 @@ export default class IqiyiSource extends BaseSource {
     }
     const linkId = linkIdMatch[1];
 
-    // 提取年份
+    // 提取年份（普通结果卡片在 year 字段，意图聚合卡片 template 112 无 year 字段，年份在 superscript 角标）
     let year = null;
-    if (album.year) {
-      const yearStr = album.year.value || album.year.name;
-      if (yearStr && typeof yearStr === 'string' && yearStr.length === 4 && /^\d{4}$/.test(yearStr)) {
-        year = parseInt(yearStr);
-      }
+    const yearStr = (album.year && (album.year.value || album.year.name)) || album.superscript;
+    if (yearStr && typeof yearStr === 'string' && /^\d{4}$/.test(yearStr)) {
+      year = parseInt(yearStr);
     }
 
     // 提取分集数
@@ -949,7 +945,7 @@ export default class IqiyiSource extends BaseSource {
       const payload = await this._decompressBrotli(compressed);
 
       if (payload[0] === 60) {
-        return this._parseIqiyiXmlDanmu(new TextDecoder("utf-8").decode(payload));
+        return this._parseIqiyiXmlDanmu(utf8BytesToString(payload));
       }
 
       return this._parseIqiyiProtoDanmu(payload);
@@ -960,17 +956,7 @@ export default class IqiyiSource extends BaseSource {
   }
 
   async _decompressBrotli(bytes) {
-    if (typeof DecompressionStream !== "undefined") {
-      try {
-        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("brotli"));
-        return new Uint8Array(await new Response(stream).arrayBuffer());
-      } catch {
-        log("info", "[iQiyi] DecompressionStream Brotli 解压失败，尝试 Node zlib");
-      }
-    }
-
-    const { brotliDecompressSync } = await import("node:zlib");
-    return new Uint8Array(brotliDecompressSync(bytes));
+    return decompressBrotli(bytes);
   }
 
   _parseIqiyiXmlDanmu(xml) {
@@ -1024,7 +1010,6 @@ export default class IqiyiSource extends BaseSource {
   _parseIqiyiProtoFields(bytes) {
     const fields = [];
     let offset = 0;
-    const decoder = new TextDecoder("utf-8");
 
     while (offset < bytes.length) {
       const keyResult = this._readIqiyiVarint(bytes, offset);
@@ -1050,7 +1035,7 @@ export default class IqiyiSource extends BaseSource {
         if (end > bytes.length) break;
 
         const raw = bytes.subarray(offset, end);
-        fields.push({ number, wireType, bytes: raw, value: decoder.decode(raw) });
+        fields.push({ number, wireType, bytes: raw, value: utf8BytesToString(raw) });
         offset = end;
       } else if (wireType === 5) {
         fields.push({ number, wireType });
